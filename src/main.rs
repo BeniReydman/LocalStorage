@@ -1,7 +1,7 @@
 extern crate rmp_serde as rmps;
 mod database;
 
-use database::{Database, Cursor};
+use database::{Database, MyCursor, Entry};
 
 use rumqtt::{MqttClient, MqttOptions, QoS};
 use rumqtt::client::Notification;
@@ -22,14 +22,14 @@ enum CurrentState {
     Busy,
 }
 
-struct State <R> {
-    pub cursor:     Option<Cursor<R>>,
+struct State {
+    pub cursor:     Option<MyCursor>,
     pub topic:      Option<String>,
     pub curr_state: CurrentState
 }
 
-impl<T> State<T> {
-    fn new(state: CurrentState) -> State<T> {
+impl State {
+    fn new(state: CurrentState) -> State {
         State {
             cursor:     None,
             topic:      None,
@@ -58,7 +58,7 @@ fn handler() {
     let mqtt_options = MqttOptions::new("LocalDB", SERVER_IP, SERVER_PORT);
     let (mut mqtt_client, notifications) = MqttClient::start(mqtt_options).unwrap();
     let database = Database::new("data");
-    let state = State::<()>::new(CurrentState::Available);
+    let state = State::new(CurrentState::Available);
     //let state = State{cursor: None, topic: None, curr_state: CurrentState::Available};
 
     //Topics (Step 1 in adding command)
@@ -115,3 +115,34 @@ fn publish(mqtt_client: &mut MqttClient, topic: &str, data: &str) -> Result<(), 
 //     let res: RawData = Deserialize::deserialize(&mut de).unwrap();
 //     println!("Deserialized to: \n{:?}", res);
 // }
+
+
+#[cfg(test)]
+mod file_sys_tests {
+    use super::*;
+
+    #[test]
+    fn test_cursor() {
+        println!("Starting test_cursor test!");
+
+        let database = Database::new("data");
+
+        let mut buf: Vec<u8> = database::new_buf().unwrap();
+        database.insert_at("20200101", "22", Entry{table: "levels", data: buf}).unwrap();
+        buf = database::new_buf().unwrap();
+        database.insert_at("20200101", "23", Entry{table: "levels", data: buf}).unwrap();
+        buf = database::new_buf().unwrap();
+        database.insert_at("20200102", "00", Entry{table: "levels", data: buf}).unwrap();
+        buf = database::new_buf().unwrap();
+        database.insert_at("20200102", "01", Entry{table: "levels", data: buf}).unwrap();
+
+        let cursor = database.get_data("levels", 1577916000, 1577926800);
+
+        database.delete_file("levels", "20200101/22").unwrap();
+        database.delete_file("levels", "20200101/23").unwrap();
+        database.delete_file("levels", "20200102/00").unwrap();
+        database.delete_file("levels", "20200102/01").unwrap();
+
+        println!("Finished test_cursor test!");
+    }
+}

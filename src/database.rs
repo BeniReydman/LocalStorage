@@ -3,6 +3,7 @@ extern crate chrono;
 use std::convert::TryFrom;
 use std::io;
 use std::io::prelude::*;
+use std::io::Cursor;
 use std::fs;
 use std::fs::File;
 use std::fs::create_dir_all;
@@ -16,6 +17,7 @@ use chrono::Duration;
 use serde::{Serialize, Deserialize};
 use crc::{crc32, Hasher32};
 use rmps::{Serializer, Deserializer};
+use rmps::decode::ReadReader;
 
 static DATE_FORMAT: &str = "%Y%m%d";
 static TIME_FORMAT: &str = "%H";
@@ -32,12 +34,13 @@ pub struct Entry {
 }
 
 #[derive(Debug)]
-pub struct Cursor <'a> {
+pub struct MyCursor {
     pub database:       Database,
-    pub de:             Deserializer<rmps::decode::ReadReader<&'a [u8]>>,
+    pub table:          &'static str,
+    pub de:             Deserializer<ReadReader<Cursor<Vec<u8>>>>,
     pub curr_ts:        DateTime<Utc>,
-    pub start_ts:       DateTime<Utc>,
-    pub end_ts:         DateTime<Utc>,
+    pub start_ts:       u32,
+    pub end_ts:         u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -64,11 +67,12 @@ pub trait DB {
     fn find_data(&self, date: &str);
 }
 
-impl <'a> Cursor <'a> {
+impl MyCursor {
     // Constructor
-    pub fn new(db: Database, deserializer: Deserializer<rmps::decode::ReadReader<&'a [u8]>>, dt: DateTime<Utc>, st: DateTime<Utc>, et: DateTime<Utc>) -> Cursor {
-        Cursor {
+    pub fn new(db: Database, tb: &'static str, deserializer: Deserializer<ReadReader<Cursor<Vec<u8>>>>, dt: DateTime<Utc>, st: u32, et: u32) -> MyCursor {
+        MyCursor {
             database:   db,
+            table:      tb,
             de:         deserializer,
             curr_ts:    dt,
             start_ts:   st,
@@ -76,42 +80,98 @@ impl <'a> Cursor <'a> {
         }
     }
 
-    pub fn next(&self, record: &mut Option<MpdRecordType>) {
-        let mut des = self.de;
+    pub fn next(&mut self, record: &mut Option<MpdRecordType>) {
         loop {
+            // Check if the end was reached
+            if cursor_is_end(self) {
+                *record = None;
+                return;
+            }
+
             // Attempt to deserialize
-            let entry: MpdRecordType = match Deserialize::deserialize(&mut des) {
+            let entry: MpdRecordType = match Deserialize::deserialize(&mut self.de) {
                 Ok(entry) => entry,
                 Err(error) => {
                     // Add an hour of time and continue
                     match error {
                         // End of file error, continue to next file *Note: other causes may trigger this*
-                        rmps::decode::Error::InvalidMarkerRead(_) => {
-                            // Used as si
-                            self.curr_ts = self.curr_ts + Duration::seconds(3600); 
-                            break;
-                        },
+                        rmps::decode::Error::InvalidMarkerRead(_) => {},
                         // Every other error, raise error and continue
-                        _ => {
-                            println!("Unexpected Error! {:?}\nIgnoring...", error);
-                            self.curr_ts = self.curr_ts + Duration::seconds(3600); 
-                            break;
+                        _ => println!("Unexpected Error! {:?}\nIgnoring...", error),
+                    }
+                    self.curr_ts = self.curr_ts + Duration::hours(1); 
+                    match get_next_file(self) {
+                        Ok(buf) => {
+                            self.de = Deserializer::new(Cursor::new(buf));
+                        },
+                        Err(_) => { 
+                            *record = None; 
+                            return;
                         }
                     }
+                    continue;
                 }
             };
 
             // Check if entry ID is smaller than start_timestamp
             if entry.id < self.start_ts {
-            record = None;
+                continue;
             }
 
             // Check if entry ID is biiger than end_timestamp
             if entry.id > self.end_ts {
-            record = None;
+                *record = None;
+                break;
             }
-        };
+        }
     }
+}
+
+fn get_next_file(cursor: &mut MyCursor) -> Result<Vec<u8>, Error> {
+    // Setup variables
+    let mut curr_directory = String::new();
+    let mut curr_file = String::new();
+    let mut buf = Vec::new();
+
+    loop {
+        buf.clear();
+        curr_directory = format!("{}/{}/{}", cursor.database.source, cursor.table, cursor.curr_ts.format(DATE_FORMAT));
+        curr_file = format!("{}/{}", curr_directory, cursor.curr_ts.format(TIME_FORMAT));
+
+        /*** Check if Directory doesn't exist ***/
+        if !Path::new(&curr_directory).exists() {
+            // Add a day of time, set hours, minutes and seconds to 0 and continue
+            cursor.curr_ts = (cursor.curr_ts + Duration::days(1)).date().and_hms(0, 0, 0);  // += gives error 
+            if cursor_is_end(cursor) {
+                return Err(Error::new(ErrorKind::Other, "Nothing more to read."));
+            }
+            continue;
+        }
+
+        /*** Check if File doesn't exist ***/
+        if !Path::new(&curr_file).exists() {
+            // Add an hour of time and continue
+            cursor.curr_ts = cursor.curr_ts + Duration::hours(1);  // += gives error
+            if cursor_is_end(cursor) {
+                return Err(Error::new(ErrorKind::Other, "Nothing more to read."));
+            }
+            continue;
+        }
+        
+        /*** Read File ***/
+        let mut file = File::open(curr_file).unwrap();
+        file.read_to_end(&mut buf).unwrap();
+        break;
+    }
+
+    return Ok(buf);
+}
+
+fn cursor_is_end(cursor: &mut MyCursor) -> bool {
+    if cursor.curr_ts.timestamp() > (cursor.end_ts as i64) {
+        return true;
+    }
+    return false;
 }
 
 impl Database {
@@ -170,8 +230,8 @@ impl Database {
     pub fn insert(&self, entry: Entry) -> Result<(), io::Error> {
         // Set the directory
         let directory = format!("{}/{}/{}/{}", 
-                    self.source,                    // Database Directory
-                    entry.table,               // Sub directory
+                    self.source,                     // Database Directory
+                    entry.table,                     // Sub directory
                     get_local_datetime(DATE_FORMAT), // Current format of data Ex: &Y&m&d -> 19700101
                     get_local_datetime(TIME_FORMAT)  // Current format of time
                 );
@@ -217,81 +277,86 @@ impl Database {
         
     }
 
-    pub fn get_data(&self, table: &'static str, start_time: u32, end_time: u32) {
-        // Variables
-        let mut curr_timestamp = get_datetime(start_time);
-        let mut end_date = get_datetime(end_time);
-        let mut buf = Vec::new();
-        let mut curr_directory = String::new();
-        let mut curr_file = String::new();
-
-        // Find starting point
-        while curr_timestamp <= end_date {
-            // Setup variables
-            buf.clear();
-            curr_directory = format!("{}/{}/{}", self.source, table, curr_timestamp.format(DATE_FORMAT));
-            curr_file = format!("{}/{}", curr_directory, curr_timestamp.format(TIME_FORMAT));
-
-            /*** Check if Directory doesn't exist ***/
-            if !Path::new(&curr_directory).exists() {
-                // Add a day of time, set hours, minutes and seconds to 0 and continue
-                curr_timestamp = (curr_timestamp + Duration::days(1)).date().and_hms(0, 0, 0); 
-                continue;
-            }
-
-            /*** Check if File doesn't exist ***/
-            if !Path::new(&curr_file).exists() {
-                // Add an hour of time and continue
-                curr_timestamp = curr_timestamp + Duration::hours(1);  // += gives error
-                continue;
-            }
-            
-            /*** Read File ***/
-            let mut file = File::open(curr_file).unwrap();
-            file.read_to_end(&mut buf).unwrap();
-
-            /*** Deserialize and "publish" ***/
-            let mut de = Deserializer::new(&buf[..]);
-            loop {
-                // Deserialize MpdRecordType into variable entry
-                let entry: MpdRecordType = match Deserialize::deserialize(&mut de) {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        // Add an hour of time and continue
-                        match error {
-                            // End of file error, continue to next file *Note: other causes may trigger this*
-                            rmps::decode::Error::InvalidMarkerRead(_) => {
-                                // Used as si
-                                curr_timestamp = curr_timestamp + Duration::seconds(3600); 
-                                break;
-                            },
-                            // Every other error, raise error and continue
-                            _ => {
-                                println!("Unexpected Error! {:?}\nIgnoring...", error);
-                                curr_timestamp = curr_timestamp + Duration::seconds(3600); 
-                                break;
-                            }
-                        }
-                    }
-                };
-
-                // Send data here
-                println!("{:?}", entry);
-
-                // Check if entry ID is smaller than start_timestamp
-                if entry.id < start_time {
-                    continue;
-                }
-
-                // Check if entry ID is biiger than end_timestamp
-                if entry.id > end_time {
-                    return;
-                }
-
-                println!("Data is good!");
-            }
-        }
+    pub fn get_data(&self, table: &'static str, start_time: u32, end_time: u32) -> MyCursor {
+        let cursor = MyCursor::new(Database::new(self.source), table, Deserializer::new(Cursor::new(Vec::new())), get_datetime(start_time), start_time, end_time);
+        return cursor;
     }
+
+    // pub fn get_data(&self, table: &'static str, start_time: u32, end_time: u32) {
+    //     // Variables
+    //     let mut curr_timestamp = get_datetime(start_time);
+    //     let mut end_date = get_datetime(end_time);
+    //     let mut buf = Vec::new();
+    //     let mut curr_directory = String::new();
+    //     let mut curr_file = String::new();
+
+    //     // Find starting point
+    //     while curr_timestamp <= end_date {
+    //         // Setup variables
+    //         buf.clear();
+    //         curr_directory = format!("{}/{}/{}", self.source, table, curr_timestamp.format(DATE_FORMAT));
+    //         curr_file = format!("{}/{}", curr_directory, curr_timestamp.format(TIME_FORMAT));
+
+    //         /*** Check if Directory doesn't exist ***/
+    //         if !Path::new(&curr_directory).exists() {
+    //             // Add a day of time, set hours, minutes and seconds to 0 and continue
+    //             curr_timestamp = (curr_timestamp + Duration::days(1)).date().and_hms(0, 0, 0); 
+    //             continue;
+    //         }
+
+    //         /*** Check if File doesn't exist ***/
+    //         if !Path::new(&curr_file).exists() {
+    //             // Add an hour of time and continue
+    //             curr_timestamp = curr_timestamp + Duration::hours(1);  // += gives error
+    //             continue;
+    //         }
+            
+    //         /*** Read File ***/
+    //         let mut file = File::open(curr_file).unwrap();
+    //         file.read_to_end(&mut buf).unwrap();
+
+    //         /*** Deserialize and "publish" ***/
+    //         let mut de = Deserializer::new(&buf[..]);
+    //         loop {
+    //             // Deserialize MpdRecordType into variable entry
+    //             let entry: MpdRecordType = match Deserialize::deserialize(&mut de) {
+    //                 Ok(entry) => entry,
+    //                 Err(error) => {
+    //                     // Add an hour of time and continue
+    //                     match error {
+    //                         // End of file error, continue to next file *Note: other causes may trigger this*
+    //                         rmps::decode::Error::InvalidMarkerRead(_) => {
+    //                             // Used as si
+    //                             curr_timestamp = curr_timestamp + Duration::seconds(3600); 
+    //                             break;
+    //                         },
+    //                         // Every other error, raise error and continue
+    //                         _ => {
+    //                             println!("Unexpected Error! {:?}\nIgnoring...", error);
+    //                             curr_timestamp = curr_timestamp + Duration::seconds(3600); 
+    //                             break;
+    //                         }
+    //                     }
+    //                 }
+    //             };
+
+    //             // Send data here
+    //             println!("{:?}", entry);
+
+    //             // Check if entry ID is smaller than start_timestamp
+    //             if entry.id < start_time {
+    //                 continue;
+    //             }
+
+    //             // Check if entry ID is biiger than end_timestamp
+    //             if entry.id > end_time {
+    //                 return;
+    //             }
+
+    //             println!("Data is good!");
+    //         }
+    //     }
+    // }
 }
 
 // fn get_starting_point(source: &'static str, buf: &mut Vec<u8>, curr_timestamp: &mut DateTime<Utc>, end_time: &mut DateTime<Utc>) -> Result<DateTime<Utc>, Error> {
@@ -466,7 +531,7 @@ pub struct RawData { // change all names
 * Purpose:
 * Serialize a randomly generated struct
 ***/
-fn new_buf() -> Result<Vec<u8>, Error> {
+pub fn new_buf() -> Result<Vec<u8>, Error> {
     match serialize_struct(generate_raw_data()) {
         Ok(buf) => return Ok(buf),
         Err(_) => return Err(Error::last_os_error())
