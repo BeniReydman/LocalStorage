@@ -1,7 +1,7 @@
 extern crate rmp_serde as rmps;
 mod database;
 
-use database::{Database, MyCursor, Entry};
+use database::{Database, MyCursor, Entry, MpdRecordType};
 
 use rumqtt::{MqttClient, MqttOptions, QoS};
 use rumqtt::client::Notification;
@@ -65,8 +65,8 @@ fn handler() {
     let topic_test = String::from("Test");
     let topic_test1 = String::from("Test1");
     let topic_test2 = String::from("Test2");
-    let topic_getdata = String::from("GetData");
-    let topic_getdata = String::from("GetNext"); // Can only be done if GetData was called and in iterating state
+    let topic_getdata = String::from("GetData"); // will use cursor to get all data
+    let topic_getnext = String::from("GetNext"); // Can only be done if GetData was called and in iterating state
 
     // Subscribe to servers to receive publishes (Step 2 in adding command)
     mqtt_client.subscribe(&topic_test, QoS::AtLeastOnce).unwrap();
@@ -130,13 +130,24 @@ mod file_sys_tests {
         let mut buf: Vec<u8> = database::new_buf().unwrap();
         database.insert_at("20200101", "22", Entry{table: "levels", data: buf}).unwrap();
         buf = database::new_buf().unwrap();
+        database.insert_at("20200101", "22", Entry{table: "levels", data: buf}).unwrap();
+        buf = database::new_buf().unwrap();
         database.insert_at("20200101", "23", Entry{table: "levels", data: buf}).unwrap();
+        buf = database::new_buf().unwrap();
+        database.insert_at("20200102", "00", Entry{table: "levels", data: buf}).unwrap();
         buf = database::new_buf().unwrap();
         database.insert_at("20200102", "00", Entry{table: "levels", data: buf}).unwrap();
         buf = database::new_buf().unwrap();
         database.insert_at("20200102", "01", Entry{table: "levels", data: buf}).unwrap();
 
-        let cursor = database.get_data("levels", 1577916000, 1577926800);
+        let mut cursor = database.get_data("levels", 1577916000, 1577926800);
+        let mut record: Option<MpdRecordType> = None;
+        println!("Looping.");
+        loop {
+            cursor.next(&mut record);
+            println!("{:?}\n", record);
+            if record.is_none() { break; }
+        }
 
         database.delete_file("levels", "20200101/22").unwrap();
         database.delete_file("levels", "20200101/23").unwrap();
