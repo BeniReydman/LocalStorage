@@ -22,7 +22,7 @@ The initial starting of the program occurs in `main.rs`. Here, the config settin
 
 The most important part is when a request for data comes in. For this, the function `get_data()` is used which uses a cursor to go to get data through pieces. The following flowchart describes the usage of cursor:
 
-![Cursor](flowcharts/cursor.png)
+<img src="flowcharts/cursor.png" alt="Cursor" width="500"/>
 
 The other functionality can be considered trivial with internal documentation already added.
 
@@ -38,6 +38,6 @@ The database is the most complicated part of this project. The database follows 
 
 The document will describe how data is stored, however to receive data is much more difficult and is done using the following concept in this flowchart:
 
-![Parser](flowcharts/get_data.png)
+<img src="flowcharts/get_data.png" alt="Parser" width="500"/>
 
 Thorough documentation also exists through out the code.
