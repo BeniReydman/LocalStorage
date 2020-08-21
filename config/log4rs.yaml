@@ -1,0 +1,43 @@
+refresh_rate: 30 seconds
+appenders:
+  roll:
+    kind: rolling_file
+    filters:
+      -
+        kind: threshold
+        level: info
+    path: logs/roll.log # The path of the current(recent) log file
+    encoder: # Format output
+      pattern: "{d(%Y-%m-%d %H:%M:%S %Z)(utc)} [{l}] - {m}{n}"
+    policy: # Handles rotation of the log file
+      kind: compound
+      trigger: # determines when the log will roll over
+        kind: size
+        limit: 100 kb
+      roller: # How to process the old log file
+        kind: fixed_window
+        pattern: logs/roll.{}.log # The filename pattern for archived logs
+        count: 999 # The maximum number of archived logs to maintain
+        base: 1 # The base value for archived log indices
+  stdout:
+    kind: console
+    encoder: # Format output
+      pattern: "{d(%Y-%m-%d %H:%M:%S %Z)(utc)} [{l}] - {m}{n}"
+    filters:
+      -
+        kind: threshold
+        level: debug
+root: # Set the default logging level and attach to appenders
+  appenders:
+    - roll
+    - stdout
+loggers: # Set particular classes using the same macro
+  app::backend::db:
+    level: info
+    additive: false
+  rumqtt::client::connection: # Spammed a lot of debug in console
+    level: info
+    additive: false
+  tokio_reactor: # Spammed a lot of debug in console
+    level: info
+    additive: false

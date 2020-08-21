@@ -1,0 +1,7 @@
+ip = "127.0.0.1"
+port = 1883
+topics = ["topic1", "topic2", "topic3", "topic_getdata", "topic_add", "topic_delete"]
+randomData = 1
+randomData_2 = 2
+randomData_3 = 3
+

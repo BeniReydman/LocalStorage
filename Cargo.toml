@@ -14,3 +14,6 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.7.3"
 crc = "1.8.1"
 ctrlc = "3.1.4"
+toml = "0.5"
+log4rs = "0.13.0"
+log = "0.4"

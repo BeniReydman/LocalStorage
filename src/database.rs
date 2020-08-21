@@ -1,6 +1,5 @@
 extern crate chrono;
 
-use std::convert::TryFrom;
 use std::io;
 use std::io::prelude::*;
 use std::io::Cursor;
@@ -8,16 +7,16 @@ use std::fs;
 use std::fs::File;
 use std::fs::create_dir_all;
 use std::fs::OpenOptions;
-use std::fs::metadata;
 use std::fs::remove_file;
 use std::path::Path;
 use std::io::{Error, ErrorKind};
 use chrono::prelude::*;
 use chrono::Duration;
 use serde::{Serialize, Deserialize};
-use crc::{crc32, Hasher32};
+use crc::crc32;
 use rmps::{Serializer, Deserializer};
 use rmps::decode::ReadReader;
+use log::{error, info};
 
 static DATE_FORMAT: &str = "%Y%m%d";
 static TIME_FORMAT: &str = "%H";
@@ -85,27 +84,27 @@ impl MyCursor {
             // Check if the end was reached
             if cursor_is_end(self) {
                 *record = None;
-                return;
             }
 
             // Attempt to deserialize
             let entry: MpdRecordType = match Deserialize::deserialize(&mut self.de) {
                 Ok(entry) => entry,
                 Err(error) => {
-                    // Add an hour of time and continue
                     match error {
                         // End of file error, continue to next file *Note: other causes may trigger this*
                         rmps::decode::Error::InvalidMarkerRead(_) => {},
                         // Every other error, raise error and continue
-                        _ => println!("Unexpected Error! {:?}\nIgnoring...", error),
+                        _ => error!("Unexpected Error! {:?}\nIgnoring...", error),
                     }
+                    // Add an hour of time and continue
                     self.curr_ts = self.curr_ts + Duration::hours(1); 
+                    // Check if there exists another file
                     match get_next_file(self) {
                         Ok(buf) => {
                             self.de = Deserializer::new(Cursor::new(buf));
                         },
                         Err(_) => {
-                            println!("Couldn't get another file, exiting loop.");
+                            info!("Couldn't get another file, exiting loop.");
                             *record = None; 
                             return;
                         }
@@ -113,17 +112,17 @@ impl MyCursor {
                     continue;
                 }
             };
-            println!("Checking entry at time: {:?} with entry id: {:?}", self.curr_ts, entry.id);
+            info!("Checking entry at time: {:?} with entry id: {:?}", self.curr_ts, entry.id);
 
             // Check if entry ID is smaller than start_timestamp
             if entry.id < self.start_ts {
-                println!("not what was being looked for, continuing");
+                info!("not what was being looked for, continuing");
                 continue;
             }
 
             // Check if entry ID is biiger than end_timestamp
             if entry.id > self.end_ts {
-                println!("Reached end time");
+                info!("Reached end time");
                 *record = None;
                 break;
             }
@@ -131,10 +130,16 @@ impl MyCursor {
             // Set record and return
             *record = Some(entry);
             break;
+    
         }
     }
 }
-
+ 
+/// get_next_file()
+///
+/// gets the next file in the database and returns error
+/// if there is nothing to read
+#[allow(unused_assignments)] // for curr_directory and curr_file 
 fn get_next_file(cursor: &mut MyCursor) -> Result<Vec<u8>, Error> {
     // Setup variables
     let mut curr_directory = String::new();
@@ -146,7 +151,7 @@ fn get_next_file(cursor: &mut MyCursor) -> Result<Vec<u8>, Error> {
         curr_directory = format!("{}/{}/{}", cursor.database.source, cursor.table, cursor.curr_ts.format(DATE_FORMAT));
         curr_file = format!("{}/{}", curr_directory, cursor.curr_ts.format(TIME_FORMAT));
 
-        /*** Check if Directory doesn't exist ***/
+        // Check if Directory doesn't exist
         if !Path::new(&curr_directory).exists() {
             // Add a day of time, set hours, minutes and seconds to 0 and continue
             cursor.curr_ts = (cursor.curr_ts + Duration::days(1)).date().and_hms(0, 0, 0);  // += gives error 
@@ -156,7 +161,7 @@ fn get_next_file(cursor: &mut MyCursor) -> Result<Vec<u8>, Error> {
             continue;
         }
 
-        /*** Check if File doesn't exist ***/
+        // Check if File doesn't exist
         if !Path::new(&curr_file).exists() {
             // Add an hour of time and continue
             cursor.curr_ts = cursor.curr_ts + Duration::hours(1);  // += gives error
@@ -166,7 +171,7 @@ fn get_next_file(cursor: &mut MyCursor) -> Result<Vec<u8>, Error> {
             continue;
         }
         
-        /*** Read File ***/
+        // Read File
         let mut file = File::open(curr_file).unwrap();
         file.read_to_end(&mut buf).unwrap();
         break;
@@ -175,6 +180,9 @@ fn get_next_file(cursor: &mut MyCursor) -> Result<Vec<u8>, Error> {
     return Ok(buf);
 }
 
+/// cursor_is_end()
+///
+/// Checks to see if the cursor is done reading files
 fn cursor_is_end(cursor: &mut MyCursor) -> bool {
     if cursor.curr_ts.timestamp() > (cursor.end_ts as i64) {
         return true;
@@ -182,25 +190,36 @@ fn cursor_is_end(cursor: &mut MyCursor) -> bool {
     return false;
 }
 
+/// Implementation of Database
 impl Database {
-    // Constructor
+    /// Constructor
     pub fn new(source: &'static str) -> Database {
         Database {
             source: source
         }
     }
 
-    // Set a new source for the database
-    pub fn set_source(&self, source: &str) -> Result<(), io::Error> {
+    /// set_source()
+    ///
+    /// Set a new source for the database
+    #[allow(dead_code)]
+    pub fn set_source(&mut self, source: &'static str) -> Result<(), io::Error> {
+        self.source = source;
         Ok(())
     }
     
-    // Lists all the databases within the current data source
+    /// list_db()
+    ///
+    /// Lists all the databases within the current data source
+    #[allow(dead_code)]
     pub fn list_db(&self) {
         print_directories(self.source, 0);
     }
 
-    // Insert into database
+    /// insert_at()
+    ///
+    /// Insert into database
+    #[allow(dead_code)]
     pub fn insert_at(&self, path: &str, file: &str, entry: Entry) -> Result<(), io::Error> {
         // Variables
         let ymd = String::from(path);
@@ -212,7 +231,7 @@ impl Database {
                     entry.table,    // Sub directory
                     path            // Current format of time
                 );
-        println!("Directory is: {:?}", directory);
+        info!("Directory is: {:?}", directory);
 
         // Ensure directory/file exists
         create_dir_all(&directory).unwrap();
@@ -220,7 +239,7 @@ impl Database {
         let path = Path::new(&mut directory);
         if !path.exists() {
             File::create(&directory)?;
-            println!("File created!\n");
+            info!("File created!\n");
         }
 
         let dt = Utc.ymd(ymd[0..4].parse::<i32>().unwrap(), ymd[4..6].parse::<u32>().unwrap(), ymd[6..8].parse::<u32>().unwrap()).and_hms(h.parse::<u32>().unwrap(), 0, 0);
@@ -235,11 +254,14 @@ impl Database {
         // Write to database
         let mut file = OpenOptions::new().append(true).open(&directory)?;   // Write at end of file
         file.write_all(&serialized_data)?;
-        println!("Wrote: {:?}\n", serialized_data);
+        info!("Wrote: {:?}\n", serialized_data);
         Ok(())
     }
 
-    // Insert into database
+    /// insert()
+    ///
+    /// Insert into database
+    #[allow(dead_code)]
     pub fn insert(&self, entry: Entry) -> Result<(), io::Error> {
         // Set the directory
         let directory = format!("{}/{}/{}/{}", 
@@ -252,18 +274,21 @@ impl Database {
         // Check if exists
         if !Path::new(&directory).exists() {
             File::create(&directory)?;
-            println!("File created!\n")
+            info!("File created!\n")
         }
         
 
         // Write to database
         let mut file = OpenOptions::new().append(true).open(&directory)?;   // Write at end of file
         file.write_all(&entry.data)?;
-        println!("Wrote: {:?}\n", entry.data);
+        info!("Wrote: {:?}\n", entry.data);
         Ok(())
     }
 
-    // Find a particular file/folder
+    /// find_file()
+    ///
+    /// Find a particular file/folder
+    #[allow(dead_code)]
     pub fn find_file(&self, source: &str) -> Result<Vec<u8>, io::Error> {
         // Set the directory
         let mut directory = String::new();
@@ -274,156 +299,54 @@ impl Database {
         let mut buf: Vec<u8> = Vec::new();
         let mut file = File::open(&mut directory)?;
         file.read_to_end(&mut buf)?;
-        println!("Read: {:?}\n", buf);
+        info!("Read: {:?}\n", buf);
         return Ok(buf);
     }
 
-    // Remove a particular file
+    /// delete_file()
+    ///
+    /// Remove a particular file
+    #[allow(dead_code)]
     pub fn delete_file(&self, table: &'static str, source: &'static str) -> io::Result<()> {
         let file = format!("{}/{}/{}", self.source, table, source);
         remove_file(file)?;
         Ok(())
     }
 
-    // Find a particular Entry
+    /// find_data()
+    ///
+    /// Find a particular Entry
+    #[allow(dead_code, unused_variables)]
     pub fn find_data(&self, date: &str) {
         
     }
 
+    /// Different implementation of get_data can be found here: https://pastebin.com/z2pbbQxy
+    /// 
+    /// get_data()
+    ///
+    /// Grabs data from the database 
     pub fn get_data(&self, table: &'static str, start_time: u32, end_time: u32) -> MyCursor {
         let start_time = start_time - 3600; // an hour of time is taken off to account for initial failure adding an hour of time
         let cursor = MyCursor::new(Database::new(self.source), table, Deserializer::new(Cursor::new(Vec::new())), get_datetime(start_time), start_time, end_time);
         return cursor;
     }
-
-    // pub fn get_data(&self, table: &'static str, start_time: u32, end_time: u32) {
-    //     // Variables
-    //     let mut curr_timestamp = get_datetime(start_time);
-    //     let mut end_date = get_datetime(end_time);
-    //     let mut buf = Vec::new();
-    //     let mut curr_directory = String::new();
-    //     let mut curr_file = String::new();
-
-    //     // Find starting point
-    //     while curr_timestamp <= end_date {
-    //         // Setup variables
-    //         buf.clear();
-    //         curr_directory = format!("{}/{}/{}", self.source, table, curr_timestamp.format(DATE_FORMAT));
-    //         curr_file = format!("{}/{}", curr_directory, curr_timestamp.format(TIME_FORMAT));
-
-    //         /*** Check if Directory doesn't exist ***/
-    //         if !Path::new(&curr_directory).exists() {
-    //             // Add a day of time, set hours, minutes and seconds to 0 and continue
-    //             curr_timestamp = (curr_timestamp + Duration::days(1)).date().and_hms(0, 0, 0); 
-    //             continue;
-    //         }
-
-    //         /*** Check if File doesn't exist ***/
-    //         if !Path::new(&curr_file).exists() {
-    //             // Add an hour of time and continue
-    //             curr_timestamp = curr_timestamp + Duration::hours(1);  // += gives error
-    //             continue;
-    //         }
-            
-    //         /*** Read File ***/
-    //         let mut file = File::open(curr_file).unwrap();
-    //         file.read_to_end(&mut buf).unwrap();
-
-    //         /*** Deserialize and "publish" ***/
-    //         let mut de = Deserializer::new(&buf[..]);
-    //         loop {
-    //             // Deserialize MpdRecordType into variable entry
-    //             let entry: MpdRecordType = match Deserialize::deserialize(&mut de) {
-    //                 Ok(entry) => entry,
-    //                 Err(error) => {
-    //                     // Add an hour of time and continue
-    //                     match error {
-    //                         // End of file error, continue to next file *Note: other causes may trigger this*
-    //                         rmps::decode::Error::InvalidMarkerRead(_) => {
-    //                             // Used as si
-    //                             curr_timestamp = curr_timestamp + Duration::seconds(3600); 
-    //                             break;
-    //                         },
-    //                         // Every other error, raise error and continue
-    //                         _ => {
-    //                             println!("Unexpected Error! {:?}\nIgnoring...", error);
-    //                             curr_timestamp = curr_timestamp + Duration::seconds(3600); 
-    //                             break;
-    //                         }
-    //                     }
-    //                 }
-    //             };
-
-    //             // Send data here
-    //             println!("{:?}", entry);
-
-    //             // Check if entry ID is smaller than start_timestamp
-    //             if entry.id < start_time {
-    //                 continue;
-    //             }
-
-    //             // Check if entry ID is biiger than end_timestamp
-    //             if entry.id > end_time {
-    //                 return;
-    //             }
-
-    //             println!("Data is good!");
-    //         }
-    //     }
-    // }
 }
 
-// fn get_starting_point(source: &'static str, buf: &mut Vec<u8>, curr_timestamp: &mut DateTime<Utc>, end_time: &mut DateTime<Utc>) -> Result<DateTime<Utc>, Error> {
-//     // Initialize variables
-//     let mut curr_directory = format!("{}{}", source, curr_timestamp.format(DATE_FORMAT));
-//     let mut curr_file = format!("{}{}", curr_directory, curr_timestamp.format(TIME_FORMAT));
-
-//     // Find starting point
-//     while curr_timestamp <= end_time {
-
-//         /*** Check if Directory doesn't exist ***/
-//         if !Path::new(&curr_directory).exists() {
-//             // Add a day of time and continue
-//             curr_timestamp = &mut (*curr_timestamp + Duration::seconds(86400));  // += gives error
-//             continue;
-//         }
-
-//         /*** Check if File doesn't exist ***/
-//         if !Path::new(&curr_file).exists() {
-//             // Add an hour of time and continue
-//             curr_timestamp = &mut (*curr_timestamp + Duration::seconds(3600));  // += gives error
-//             continue;
-//         }
-
-//         /*** Read until first value is found ***/
-//         let mut file = File::open(source)?;
-//         file.read_to_end(&mut buf)?;
-
-//         return Ok(*curr_timestamp);
-//     }
-
-//     return Err(Error::new(ErrorKind::Other, format!("No Data exists in the time range {:?} to {:?}.", start_time, end_time)));
-// }
-
-/***
-* Function read:
-*
-* Purpose:
-* reads directory
-***/
+/// read()
+///
+/// reads directory
+#[allow(dead_code)]
 fn read(mut buf: &mut Vec<u8>, mut directory: &mut String) -> std::io::Result<()> {
     let mut file = File::open(&mut directory)?;
     file.read_to_end(&mut buf)?;
-    println!("Read: {:?}\n", buf);
+    info!("Read: {:?}\n", buf);
     Ok(())
 }
 
-/***
-* Function print_directories:
-*
-* Purpose:
-* prints all the directories not including files
-***/
+/// print_directories()
+///
+/// prints all the directories not including files
 fn print_directories(path: &str, count: usize) {
     let paths = fs::read_dir(path).unwrap();
 
@@ -439,12 +362,10 @@ fn print_directories(path: &str, count: usize) {
     }
 }
 
-/***
-* Function print_db:
-*
-* Purpose:
-* prints all the directories and files
-***/
+/// print_db()
+///
+/// prints all the directories and files
+#[allow(dead_code)]
 fn print_db(path: &str, count: usize) {
     let paths = fs::read_dir(path).unwrap();
 
@@ -460,63 +381,55 @@ fn print_db(path: &str, count: usize) {
     }
 }
 
-/***
-* Function serialize_struct:
-*
-* Purpose:
-* Serializes structs
-***/
+/// serialize_struct()
+///
+/// Serializes structs
 fn serialize_struct<T>(data: T) -> Result<Vec<u8>, ()> where T: Serialize, {
     let mut buf = Vec::new();
     let mut msg_pack = Serializer::new(&mut buf);
     match data.serialize(&mut msg_pack) {
         Ok(_) => return Ok(buf),
         Err(e) => {
-            println!("Error serializing: {:?}", e);
+            error!("Error serializing: {:?}", e);
             return Err(())
         }
     }
+
+    
 }
 
-/***
-* Function get_local_datetime:
-*
-* Purpose:
-* Returns the current time UTC
-***/
+/// get_local_datetime()
+///
+/// Returns the current time UTC
 fn get_local_datetime(format: &str) -> String {
     let local: DateTime<Utc> = Utc::now();
     return local.format(format).to_string();
 }
 
-/***
-* Function get_datetime:
-*
-* Purpose:
-* Converts timestamp to datetime
-***/
+/// get_datetime()
+///
+/// Converts timestamp to datetime
 fn get_datetime(timestamp: u32) -> DateTime<Utc> {
     let naive_datetime = NaiveDateTime::from_timestamp(i64::from(timestamp), 0);  // the 0 represents nanoseconds for leap seconds
     let utc_datetime = DateTime::<Utc>::from_utc(naive_datetime, Utc);
     return utc_datetime;
 }
 
-/***
-* Function print_error:
-*
-* Purpose:
-* Prints custom errors
-***/
+/// print_error()
+///
+/// Prints custom errors
+#[allow(dead_code)]
 fn print_error(err: Error) {
     if let Some(inner_err) = err.into_inner() {
-        println!("Inner error: {}", inner_err);
+        error!("Inner error: {}", inner_err);
     } else {
-        println!("No inner error");
+        error!("No inner error");
     }
 }
 
+/** 
 /*************************************************** TESTS **************************************************/
-
+*/
 use rand::Rng;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -539,12 +452,10 @@ pub struct RawData { // change all names
 	pub TimeStamp:	Option<String> // change ~ ticks
 }
 
-/***
-* Function new_buf:
-*
-* Purpose:
-* Serialize a randomly generated struct
-***/
+/// new_buf()
+///
+/// Serialize a randomly generated struct
+#[allow(dead_code)]
 pub fn new_buf() -> Result<Vec<u8>, Error> {
     match serialize_struct(generate_raw_data()) {
         Ok(buf) => return Ok(buf),
@@ -552,13 +463,9 @@ pub fn new_buf() -> Result<Vec<u8>, Error> {
     };
 }
 
-/***
-* Function generate_raw_data:
-*
-* Purpose:
-* generates random data for struct
-
-***/
+/// generate_raw_data()
+///
+/// generates random data for struct
 fn generate_raw_data() -> RawData {
     let raw_data = RawData {
         AQHI:		generate_i32(),
@@ -581,12 +488,10 @@ fn generate_raw_data() -> RawData {
     return raw_data;
 }
 
-/***
-* Function generate_i32:
-*
-* Purpose:
-* Generates random i32 from 0-10, if it's greater than 8, return null
-***/
+/// generate_i32()
+///
+/// Generates random i32 from 0-10, if it's greater than 8, return null
+#[allow(dead_code)]
 fn generate_i32() -> Option<i32> {
     let mut rng = rand::thread_rng();
     let num: i32 = rng.gen_range(0,10);
@@ -596,12 +501,10 @@ fn generate_i32() -> Option<i32> {
     return Some(num);
 }
 
-/***
-* Function generate_f32:
-*
-* Purpose:
-* Generates random f32 from 0-10, if it's greater than 8, return null
-***/
+/// generate_f32()
+///
+/// Generates random f32 from 0-10, if it's greater than 8, return null
+#[allow(dead_code)]
 fn generate_f32() -> Option<f32> {
     let mut rng = rand::thread_rng();
     let num: f32 = rng.gen_range(0.0,10.0);
@@ -613,6 +516,7 @@ fn generate_f32() -> Option<f32> {
 
 #[cfg(test)]
 mod file_sys_tests {
+    #[allow(unused_imports)]
     use super::*;
 
     // #[test]
