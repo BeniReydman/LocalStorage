@@ -34,7 +34,7 @@ The TOML_Parser works by having a struct define the variables to be extracted fr
 
 #### Database
 
-The database is the most complicated part of this project. The database follows the concept of EdgeNode LocalStore described [here](https://github.com/BeniReydman/LocalStorage/documentation/EdgeNode_LocalStore.md).
+The database is the most complicated part of this project. The database follows the concept of EdgeNode LocalStore described [here](https://github.com/BeniReydman/LocalStorage/blob/master/documentation/EdgeNode_LocalStore.md).
 
 The document will describe how data is stored, however to receive data is much more difficult and is done using the following concept in this flowchart:
 
